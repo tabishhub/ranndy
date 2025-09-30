@@ -46,12 +46,13 @@ pip install -r requirements.txt
 - Protein molecules simulation data can be requested here [D.E. Shaw Research](https://www.deshawresearch.com/)
 
 ### Reference
-
+```bibtex
 @article{TLK2025,
   title   = {How deep is your network? Deep vs. shallow learning of transfer operators},
   author  = {Tabish, Mohammad and Leimkuhler, Benedict and Klus, Stefan},
   year    = {2025},
   url  = {[arXiv:2509.19930](https://arxiv.org/abs/2509.19930)}
 }
+```
 
 ---
