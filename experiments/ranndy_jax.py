@@ -195,86 +195,115 @@ class NeuralNetwork(nn.Module):
         return x.T  # (features, batch)
 
 
-class RaNNDy(NeuralNetwork):
+class RaNNDy:
     def __init__(
         self,
-        X,  # Input data for the neural network
+        X,
         operator,
         hidden_sizes,
-        final_size,  # output layer size
-        activation="tanh",  # activation function
-        # direct_link=False,  # Whether to use direct link to input
+        final_size,
+        activation="tanh",
         init_weights_dist: str = "normal",
-        init_weights_std: float = 1.0,  # Standard deviation for weight initialization
+        init_weights_std: float = 1.0,
         init_bias_dist: str = "normal",
-        init_bias_std: float = 1.0,  # Standard deviation for bias initialization
-        # randomized: bool = False,  # Whether to use randomized weights initialization
-        batch_norm: bool = False,  # Whether to use batch normalization
-        random_state=0,  # Random state for reproducibility
+        init_bias_std: float = 1.0,
+        random_state=0,
+        batch_norm=False,
         vampnet=False,
     ):
-        super().__init__(
-            hidden_sizes,
-            final_size,
-            activation,
-            # direct_link,
-            init_weights_dist,
-            init_weights_std,
-            init_bias_dist,
-            init_bias_std,
-            # randomized,
-            batch_norm,
-            vampnet,
-        )
         self.X = X
         self.operator = operator
         self.key = random.PRNGKey(random_state)
+
+        # Create the neural network
         self.model = NeuralNetwork(
-            hidden_sizes,
-            final_size,
-            activation,
-            init_weights_dist,
-            init_weights_std,
-            init_bias_dist,
-            init_bias_std,
-            # direct_link,
+            hidden_sizes=hidden_sizes,
+            final_size=final_size,
+            activation=activation,
+            init_weights_dist=init_weights_dist,
+            init_weights_std=init_weights_std,
+            init_bias_dist=init_bias_dist,
+            init_bias_std=init_bias_std,
+            batch_norm=batch_norm,
+            vampnet=vampnet,
         )
+
+        # Initialize parameters
         self.params = self.model.init(self.key, jnp.ones(self.X.shape))
 
     def new_params(self, key):
-        """
-        Initializes new parameters for the model using a given random key.
-        """
-        params = self.model.init(key, jnp.ones(self.X.shape))
-        return params
+        """Initializes new parameters for the model using a given random key."""
+        return self.model.init(key, jnp.ones(self.X.shape))
 
     def compute_jacobian_nn(self, params, x):
+        """Compute Jacobian for a single data point.
+
+        Args:
+            params: Model parameters
+            x: Input of shape (d,)
+
+        Returns:
+            Jacobian of shape (final_size, d)
+        """
+
         def model_apply_fn(x_):
-            y = self.model.apply(params, x_[..., None], training=False, mutable=False)
-            return jnp.squeeze(y, axis=1)
+
+            x_input = x_[..., None]  # (d, 1)
+            y = self.model.apply(params, x_input, training=False)
+            # y.shape: (final_size, 1)
+            return jnp.squeeze(y, axis=1)  # (final_size,)
 
         return jax.jacobian(model_apply_fn, argnums=0)(x)
 
     def jacobian_all_nn(self, params, data):
-        """Returns the Jacobian matrix evaluated for all the data points"""
-        return jax.vmap(self.compute_jacobian_nn, in_axes=(None, 1), out_axes=2)(
-            params, data
-        )
+        """Returns the Jacobian matrix evaluated for all the data points.
+
+        Args:
+            params: Model parameters
+            data: Input of shape (d, m) where d=dimension, m=number of points
+
+        Returns:
+            Jacobian of shape (final_size, d, m)
+        """
+        return jax.vmap(
+            self.compute_jacobian_nn,
+            in_axes=(None, 1),  # Map over columns of data
+            out_axes=2,  # Put batch dimension last
+        )(params, data)
 
     def compute_hessian_nn(self, params, x):
+        """Compute Hessian for a single data point.
+
+        Args:
+            params: Model parameters
+            x: Input of shape (d,)
+
+        Returns:
+            Hessian of shape (final_size, d, d)
+        """
+
         def model_apply_fn(x_):
-            # y = psi_nn.apply(params, x.reshape(x.shape[0], 1), training=False, mutable=False)
-            # jnp.squeeze(y)   this could also be done in the model_apply_fn
-            y = self.model.apply(params, x_[..., None], training=False, mutable=False)
-            return jnp.squeeze(y, axis=1)
+            x_input = x_[..., None]  # (d, 1)
+            y = self.model.apply(params, x_input, training=False)
+            return jnp.squeeze(y, axis=1)  # (final_size,)
 
         return jax.hessian(model_apply_fn, argnums=0)(x)
 
     def hessian_all_nn(self, params, data):
-        """Returns the Hessian matrix evaluated for all the data points"""
-        return jax.vmap(self.compute_hessian_nn, in_axes=(None, 1), out_axes=3)(
-            params, data
-        )
+        """Returns the Hessian matrix evaluated for all the data points.
+
+        Args:
+            params: Model parameters
+            data: Input of shape (d, m) where d=dimension, m=number of points
+
+        Returns:
+            Hessian of shape (final_size, d, d, m)
+        """
+        return jax.vmap(
+            self.compute_hessian_nn,
+            in_axes=(None, 1),  # Map over columns of data
+            out_axes=3,  # Put batch dimension last
+        )(params, data)
 
     def koopman_eig_decomp(
         self,
@@ -316,16 +345,16 @@ class RaNNDy(NeuralNetwork):
         E = eigvecs[:, :n].T  # shape (n, N_o)
 
         ## whitening transformation
-        ECxE_T = E @ C_xx @ E.T  # shape (k × k)
+        ECxE_T = E @ C_xx @ E.T  #
 
         # make E such that E C_xx E^T = I
 
-        ECxE_T_inv_sqrt = fractional_matrix_power(ECxE_T, -0.5)  # shape (k × k)
+        ECxE_T_inv_sqrt = fractional_matrix_power(ECxE_T, -0.5)  #
 
         # Apply whitening to E
         E_whitened = ECxE_T_inv_sqrt @ E
 
-        return eigvals[:n], E_whitened
+        return A, eigvals[:n], E_whitened
 
     def koopman_generator_eig_decomp(
         self,
@@ -380,16 +409,16 @@ class RaNNDy(NeuralNetwork):
         E = eigvecs[:, :n].T  # shape (n, N_o)
 
         ## whitening transformation
-        ECxE_T = E @ C_xx @ E.T  # shape (k × k)
+        ECxE_T = E @ C_xx @ E.T  #
 
         # make E such that E C_xx E^T = I
 
-        ECxE_T_inv_sqrt = fractional_matrix_power(ECxE_T, -0.5)  # shape (k × k)
+        ECxE_T_inv_sqrt = fractional_matrix_power(ECxE_T, -0.5)  #
 
         # Apply whitening to E
         E_whitened = ECxE_T_inv_sqrt @ E
 
-        return eigvals[:n], E_whitened
+        return A, eigvals[:n], E_whitened
 
     def schrodinger_eig_decomp(
         self,
@@ -438,16 +467,16 @@ class RaNNDy(NeuralNetwork):
         E = eigvecs[:, :n].T  # shape (n, N_o)
 
         ## whitening transformation
-        ECxE_T = E @ C_xx @ E.T  # shape (k × k)
+        ECxE_T = E @ C_xx @ E.T  #
 
         # make E such that E C_xx E^T = I
 
-        ECxE_T_inv_sqrt = fractional_matrix_power(ECxE_T, -0.5)  # shape (k × k)
+        ECxE_T_inv_sqrt = fractional_matrix_power(ECxE_T, -0.5)  #
 
         # Apply whitening to E
         E_whitened = ECxE_T_inv_sqrt @ E
 
-        return eigvals[:n], E_whitened
+        return A, eigvals[:n], E_whitened
 
     def forward_backward_eig_decomp(
         self,
@@ -489,16 +518,16 @@ class RaNNDy(NeuralNetwork):
         # Take the top n eigenvectors
         E = eigvecs[:, :n].T  # shape (n, N_o)
         ## whitening transformation
-        ECxE_T = E @ C_xx @ E.T  # shape (k × k)
+        ECxE_T = E @ C_xx @ E.T  #
 
         # make E such that E C_xx E^T = I
 
-        ECxE_T_inv_sqrt = fractional_matrix_power(ECxE_T, -0.5)  # shape (k × k)
+        ECxE_T_inv_sqrt = fractional_matrix_power(ECxE_T, -0.5)  #
 
         # Apply whitening to E
         E_whitened = ECxE_T_inv_sqrt @ E
 
-        return eigvals[:n], E_whitened
+        return A, eigvals[:n], E_whitened
 
     def operator_eig_decomp(
         self,
@@ -527,31 +556,31 @@ class RaNNDy(NeuralNetwork):
             params = params
         # for Koopman operator
         if self.operator == "koopman":
-            eigvals, E = self.koopman_eig_decomp(
+            A, eigvals, E = self.koopman_eig_decomp(
                 X=X, Y=Y, params=params, n=n, epsilon=epsilon
             )
-            return eigvals, E
+            return A, eigvals, E
 
         # for Koopman generator
         elif self.operator == "koopman_generator":
             eigvals, E = self.koopman_generator_eig_decomp(
-                X + X, Y=Y, Z=Z, params=params, n=n, epsilon=epsilon
+                X=X, Y=Y, Z=Z, params=params, n=n, epsilon=epsilon
             )
-            return eigvals, E
+            return A, eigvals, E
 
         # for Schrodinger operator
         elif self.operator == "schrodinger":
             eigvals, E = self.schrodinger_eig_decomp(
                 X=X, params=params, n=n, epsilon=epsilon, **kwargs
             )
-            return eigvals, E
+            return A, eigvals, E
 
         # for forward-backward operator
         elif self.operator == "forward_backward":
             eigvals, E = self.forward_backward_eig_decomp(
                 X=X, Y=Y, params=params, n=n, epsilon=epsilon
             )
-            return eigvals, E
+            return A, eigvals, E
 
         else:
             raise ValueError(
@@ -577,13 +606,13 @@ class RaNNDy(NeuralNetwork):
         C_yy_reg = C_yy + epsilon * jnp.identity(C_yy.shape[0])
 
         print(
-            "Rank of C_xx and C_xx_reg matrix: ",
+            "Rank of C_00 and C_00_reg matrix: ",
             jnp.linalg.matrix_rank(C_xx),
             jnp.linalg.matrix_rank(C_xx_reg),
         )
-        print("Rank of C_xy matrix: ", jnp.linalg.matrix_rank(C_xy))
+        print("Rank of C_01 matrix: ", jnp.linalg.matrix_rank(C_xy))
         print(
-            "Rank of C_yy and C_yy_reg matrix: ",
+            "Rank of C_11 and C_11_reg matrix: ",
             jnp.linalg.matrix_rank(C_yy),
             jnp.linalg.matrix_rank(C_yy_reg),
         )
@@ -622,7 +651,7 @@ class RaNNDy(NeuralNetwork):
         # keys = random.split(self.key, n_models)
         for i in range(n_models):
             params_n = self.new_params(random.PRNGKey(i))
-            eigvals, eigvecs = self.operator_eig_decomp(
+            A, eigvals, eigvecs = self.operator_eig_decomp(
                 X, Y, None, params=params_n, n=n, epsilon=epsilon, **kwargs
             )
             ensem_eigvals[:, i] = eigvals
@@ -690,7 +719,6 @@ class VAMPNets:
     def __init__(
         self,
         X,  # Input data for the neural network
-        operator,  # TODO: make it for more operators?
         hidden_sizes,
         final_size,  # output layer size
         activation="tanh",  # activation function
@@ -704,7 +732,6 @@ class VAMPNets:
         vampnet=True,
     ):
         self.X = X
-        self.operator = operator
         self.key = random.PRNGKey(random_state)
         self.model = NeuralNetwork(
             hidden_sizes,
@@ -792,8 +819,8 @@ class VAMPNets:
 
         return -jnp.square(vamp_score)  # -jnp.sum(jnp.real(vamp_score[:5]))
 
-    def training(self, X, Y, epochs=100, optim="adam", lr=1e-3, epsilon=1e-5):
-        tx = self.optimizer("adam", lr=lr)
+    def training(self, X, Y, n=5, epochs=100, optim="adam", lr=1e-3, epsilon=1e-5):
+        tx = self.optimizer(optim=optim, lr=lr)
         opt_state = tx.init(self.params)
 
         def train_step(params, opt_state, X, Y):
@@ -806,10 +833,13 @@ class VAMPNets:
         params = self.params
         losses = []
         for epoch in range(epochs):
-            params, opt_state, loss = train_step(params, opt_state, X, Y)
-            losses.append(loss)
+            params, opt_state, _ = train_step(params, opt_state, X, Y)
+            A, eigvals, eigvecs = self.koopman_approximation(
+                params=params, X=X, Y=Y, n=n
+            )
+            losses.append(jnp.trace(A))
             if epoch % 10 == 0:
-                print(f"Epoch {epoch}, Loss: {loss:.4f}")
+                print(f"Epoch {epoch}, Loss: {-jnp.trace(A):.4f}")
 
         self.params = params
         return params, losses
@@ -855,7 +885,7 @@ class VAMPNets:
         eigvals = eigvals[idx]
         eigvecs = eigvecs[:, idx]
 
-        return eigvals[:n], eigvecs[:, :n]
+        return A, eigvals[:n], eigvecs[:, :n]
 
     def eigenfunctions(
         self, params: jnp.ndarray, eigvecs: jnp.ndarray, domain: jnp.ndarray = None
