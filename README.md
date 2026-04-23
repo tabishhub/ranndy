@@ -2,10 +2,10 @@
 
 This repository provides code and experiments for **RaNNDy**: a randomized neural network approach for learning of transfer operators (Koopman, forward-backward, etc.) and their spectral decompositions.  
 
-The method is described in the paper:  
+<!-- The method is described in the paper:  
 **“How deep is your network? Deep vs. shallow learning of transfer operators”**  
 by Mohammad Tabish, Benedict Leimkuhler, and Stefan Klus (2025).  
-👉 [Read the paper here](https://arxiv.org/abs/2509.19930)
+👉 [Read the paper here](https://arxiv.org/abs/2509.19930) -->
 
 ---
 
@@ -45,7 +45,7 @@ pip install -r requirements.txt
 - [d3s](https://github.com/sklus/d3s)
 - Protein molecules simulation data can be requested here [D.E. Shaw Research](https://www.deshawresearch.com/)
 
-### Reference
+<!-- ### Reference
 ```bibtex
 @article{TLK2025,
   title   = {How deep is your network? Deep vs. shallow learning of transfer operators},
@@ -53,6 +53,6 @@ pip install -r requirements.txt
   year    = {2025},
   url  = {[arXiv:2509.19930](https://arxiv.org/abs/2509.19930)}
 }
-```
+``` -->
 
 ---
