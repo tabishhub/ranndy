@@ -209,7 +209,6 @@ class RaNNDy:
         init_bias_std: float = 1.0,
         random_state=0,
         batch_norm=False,
-        vampnet=False,
     ):
         self.X = X
         self.operator = operator
@@ -225,7 +224,7 @@ class RaNNDy:
             init_bias_dist=init_bias_dist,
             init_bias_std=init_bias_std,
             batch_norm=batch_norm,
-            vampnet=vampnet,
+            vampnet=False,
         )
 
         # Initialize parameters
@@ -563,21 +562,21 @@ class RaNNDy:
 
         # for Koopman generator
         elif self.operator == "koopman_generator":
-            eigvals, E = self.koopman_generator_eig_decomp(
+            A, eigvals, E = self.koopman_generator_eig_decomp(
                 X=X, Y=Y, Z=Z, params=params, n=n, epsilon=epsilon
             )
             return A, eigvals, E
 
         # for Schrodinger operator
         elif self.operator == "schrodinger":
-            eigvals, E = self.schrodinger_eig_decomp(
+            A, eigvals, E = self.schrodinger_eig_decomp(
                 X=X, params=params, n=n, epsilon=epsilon, **kwargs
             )
             return A, eigvals, E
 
         # for forward-backward operator
         elif self.operator == "forward_backward":
-            eigvals, E = self.forward_backward_eig_decomp(
+            A, eigvals, E = self.forward_backward_eig_decomp(
                 X=X, Y=Y, params=params, n=n, epsilon=epsilon
             )
             return A, eigvals, E
@@ -729,7 +728,6 @@ class VAMPNets:
         # randomized: bool = False,  # Whether to use randomized weights initialization
         batch_norm: bool = False,  # Whether to use batch normalization
         random_state=0,  # Random state for reproducibility
-        vampnet=True,
     ):
         self.X = X
         self.key = random.PRNGKey(random_state)
@@ -743,7 +741,7 @@ class VAMPNets:
             init_bias_std,
             # randomized,
             batch_norm,
-            vampnet,
+            vampnet=True,
         )
         self.params = self.model.init(self.key, jnp.ones(self.X.shape), training=True)
         # self.params = self.variables["params"]
@@ -834,12 +832,10 @@ class VAMPNets:
         losses = []
         for epoch in range(epochs):
             params, opt_state, _ = train_step(params, opt_state, X, Y)
-            A, eigvals, eigvecs = self.koopman_approximation(
-                params=params, X=X, Y=Y, n=n
-            )
-            losses.append(jnp.trace(A))
+            _, eigvals, _ = self.koopman_approximation(params=params, X=X, Y=Y, n=n)
+            losses.append(jnp.sum(jnp.real(eigvals)))
             if epoch % 10 == 0:
-                print(f"Epoch {epoch}, Loss: {-jnp.trace(A):.4f}")
+                print(f"Epoch {epoch}, Loss: {-jnp.sum(jnp.real(eigvals)):.4f}")
 
         self.params = params
         return params, losses
@@ -850,6 +846,7 @@ class VAMPNets:
         X: jnp.ndarray,
         Y: jnp.ndarray,
         n: int = 5,
+        operator: str = "koopman",
         epsilon: float = 1e-5,
     ):
         """
@@ -872,12 +869,18 @@ class VAMPNets:
         # N_y = N_y - jnp.mean(N_y, axis=1, keepdims=True)
 
         C_xx = N_x @ N_x.T  # (N_o, N_o)
-        C_xy = N_x @ N_y.T  # (N_o, N_o)
+        C_xy = N_x @ N_y.T
+        C_yy = N_y @ N_y.T
 
         C_xx_reg = C_xx + epsilon * jnp.identity(C_xx.shape[0])
-        # Solve the generalized eigenvalue problem
-        # Compute the linear operator A = C_yx @ pinv(C_xx)
-        A = jnp.linalg.pinv(C_xx_reg) @ C_xy  # Shape: (N_o, N_o)
+        C_yy_reg = C_yy + epsilon * jnp.identity(C_yy.shape[0])
+
+        if operator == "koopman":
+            # Compute the linear operator A = C_yx @ pinv(C_xx)
+            A = jnp.linalg.pinv(C_xx_reg) @ C_xy  # Shape: (N_o, N_o)
+
+        elif operator == "forward_backward":
+            A = jnp.linalg.pinv(C_xx_reg) @ C_xy @ jnp.linalg.pinv(C_yy_reg) @ C_xy.T
 
         eigvals, eigvecs = jnp.linalg.eig(A)
 
