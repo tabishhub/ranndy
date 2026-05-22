@@ -196,6 +196,8 @@ class NeuralNetwork(nn.Module):
 
 
 class RaNNDy:
+    """Main RaNNDy class"""
+
     def __init__(
         self,
         X,
@@ -312,6 +314,7 @@ class RaNNDy:
         n: int = 5,
         epsilon: float = 1e-5,
     ):
+        """Koopman operator approximation"""
         if params is None:
             params = self.params
         else:
@@ -364,6 +367,7 @@ class RaNNDy:
         n: int = 5,
         epsilon: float = 1e-5,
     ):
+        """Koopman generator approximation"""
         if params is None:
             params = self.params
         else:
@@ -427,6 +431,7 @@ class RaNNDy:
         epsilon: float = 1e-5,
         **kwargs,
     ):
+        """Schrodinger operator approximation"""
         if params is None:
             params = self.params
         else:
@@ -485,6 +490,7 @@ class RaNNDy:
         n: int = 5,
         epsilon: float = 1e-5,
     ):
+        """Forward backward operator approximation"""
         if params is None:
             params = self.params
         else:
@@ -541,6 +547,7 @@ class RaNNDy:
         """
         Calculates the eigenvalues and eigenvectors of the approximated operator matrix.
         Params:
+        X, Y, Z: data matrices (X, Y needed for transfer operators)
         n - number of eigenvalues and eigenvectors to return
         epsilon - regularization parameter
         kwargs - arguments for different operators
@@ -587,6 +594,7 @@ class RaNNDy:
             )
 
     def ranks_cov_matrices(self, X, Y, epsilon, params=None):
+        """To check rank of covariance matrices"""
         if params is None:
             params = self.params
         else:
@@ -640,7 +648,7 @@ class RaNNDy:
         kwargs - arguments for different operators
 
         Returns:
-        H_aug - Ensemble of models
+        Mean and variance of the eigendecompostion of the ensemble of models
         """
         if domain is None:
             domain = X
@@ -739,7 +747,6 @@ class VAMPNets:
             init_weights_std,
             init_bias_dist,
             init_bias_std,
-            # randomized,
             batch_norm,
             vampnet=True,
         )
@@ -818,6 +825,7 @@ class VAMPNets:
         return -jnp.square(vamp_score)  # -jnp.sum(jnp.real(vamp_score[:5]))
 
     def training(self, X, Y, n=5, epochs=100, optim="adam", lr=1e-3, epsilon=1e-5):
+        """Train the VAMPnets for certain epcohs with optimizer optim."""
         tx = self.optimizer(optim=optim, lr=lr)
         opt_state = tx.init(self.params)
 
