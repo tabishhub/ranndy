@@ -1,3 +1,7 @@
+
+
+https://github.com/user-attachments/assets/2d275352-ea82-4a46-8359-441700d1ad19
+
 # Randomized Neural Networks for Transfer Operators (RaNNDy)
 
 This repository provides code and experiments for **RaNNDy**: a randomized neural network approach for learning of transfer operators (Koopman, forward-backward, etc.) and their spectral decompositions.  
