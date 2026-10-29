@@ -1,5 +1,8 @@
+import os
+
 import jax
 import jax.numpy as jnp
+import mdtraj as md
 import numpy as np
 import optax
 import scipy as sp
@@ -8,6 +11,97 @@ from jax import random
 from scipy.linalg import fractional_matrix_power
 
 # Utility functions
+
+
+def load_traj(molecule: str, data_dir: str):
+    """
+    Returns: traj (mdtraj.Trajectory)
+    """
+
+    if molecule in {"nug2", "chignolin"}:
+        # D.E. Shaw datasets
+        if molecule == "nug2":
+            molecule_traj_dir = "ProteinG/NuG2-0-protein/"
+            molecule_top = "/home/s2421480/Documents/MD_datasets/ProteinG/NuG2pdb.pdb"
+        else:  # chignolin
+            molecule_traj_dir = "Chignolin/CLN025-0-protein/"
+            molecule_top = (
+                "/home/s2421480/Documents/MD_datasets/Chignolin/chignolin_pdb.pdb"
+            )
+
+        molecule_dir = data_dir + molecule_traj_dir
+
+        traj_names = []
+        for filename in sorted(os.listdir(molecule_dir)):
+            file_path = os.path.join(molecule_dir, filename)
+            traj_names.append(file_path)
+        if molecule == "nug2":
+            traj = md.load(traj_names[::2], top=molecule_top)
+        elif molecule == "chignolin":
+            traj = md.load(traj_names, top=molecule_top)
+
+    elif molecule in {"adip", "decal"}:
+        # Alanine dipeptide / deca alanine datasets (your current code is alanine dipeptide)
+        molecule_traj_dir = "feliks_data/Alanine_Dipeptide/"
+        molecule_dir = data_dir + molecule_traj_dir
+
+        # Keep the filenames exactly as in your example
+        traj_names = os.path.join(molecule_dir, "md_0_center.xtc")
+        traj = md.load(traj_names, top=os.path.join(molecule_dir, "ala2_newbox.gro"))
+    else:
+        raise ValueError(f"Unknown molecule: {molecule}")
+
+    return traj
+
+
+def calculate_its(eigvals, tau_ps, n_timescales=5):
+    """
+    Calculate non-trivial Koopman implied timescales.
+
+    Parameters
+    ----------
+    eigvals : array-like
+        Koopman eigenvalues.
+    tau_ps : float
+        Lag time in ps.
+    n_timescales : int
+        Number of slow timescales to return.
+
+    Returns
+    -------
+    eigvals_sorted : np.ndarray
+        Non-trivial eigenvalues.
+    its_ns : np.ndarray
+        Implied timescales in ns.
+    """
+
+    eigvals = np.asarray(eigvals)
+
+    eigvals = eigvals[np.isfinite(eigvals)]
+
+    # eigvals = eigvals[
+    #     np.argsort(-np.abs(eigvals))
+    # ]
+
+    if len(eigvals) > 0:
+        stationary_idx = np.argmin(np.abs(eigvals - 1.0))
+        eigvals = np.delete(eigvals, stationary_idx)
+
+    abs_lambda = np.abs(eigvals)
+
+    valid = (abs_lambda > 0) & (abs_lambda < 1)
+
+    eigvals = eigvals[valid]
+    abs_lambda = abs_lambda[valid]
+
+    its_ps = -tau_ps / np.log(abs_lambda)
+
+    order = np.argsort(its_ps)[::-1]
+
+    eigvals = eigvals[order]
+    its_ns = its_ps[order] / 1000.0
+
+    return (eigvals[:n_timescales], its_ns[:n_timescales])
 
 
 def sortEig(A, evs=5, which="LM"):
@@ -26,7 +120,6 @@ def sortEig(A, evs=5, which="LM"):
     return (d[ind], V[:, ind])
 
 
-#
 def qgedmd(X, psi, c0, c2, evs=5):
     """
     gEDMD for quantum
@@ -103,17 +196,19 @@ def inverse(x, epsilon=1e-10, ret_sqrt=False):
 
 class NeuralNetwork(nn.Module):
     hidden_sizes: list
-    final_size: int
     activation: str = "tanh"
     init_weights_dist: str = "lecun_normal"
     init_weights_std: float = 1.0
     init_bias_dist: str = "zeros"
     init_bias_std: float = 1.0
-    # randomized: bool = False
     batch_norm: bool = False
-    vampnet: bool = False
+    softmax_output: bool = False
 
     def activate(self, x):
+        # if ws is not None:
+        #     scale = ws
+        # else:
+        #     scale = 1.0
         acts = {
             "relu": nn.relu,
             "sigmoid": nn.sigmoid,
@@ -121,12 +216,16 @@ class NeuralNetwork(nn.Module):
             "elu": nn.elu,
             "softmax": lambda y: nn.softmax(y, axis=-1),
             "gelu": nn.gelu,
+            "cos": jnp.cos,
+            "sin": jnp.sin,
         }
         if self.activation not in acts:
             raise ValueError(f"Unsupported activation: {self.activation}")
         return acts[self.activation](x)
 
-    def get_kernel_init(self):
+    def get_kernel_init(
+        self,
+    ):
         inits = {
             "normal": nn.initializers.normal(self.init_weights_std),
             "uniform": nn.initializers.uniform(self.init_weights_std),
@@ -142,6 +241,7 @@ class NeuralNetwork(nn.Module):
         return inits[self.init_weights_dist]
 
     def get_bias_init(self):
+
         inits = {
             "normal": nn.initializers.normal(self.init_bias_std),
             "uniform": nn.initializers.uniform(self.init_bias_std),
@@ -155,10 +255,11 @@ class NeuralNetwork(nn.Module):
 
     @nn.compact
     def __call__(self, x, training=True):
+
         # input: (features, batch)
         x = x.T  # (batch, features)
 
-        for i, hidden_size in enumerate(self.hidden_sizes):
+        for i, hidden_size in enumerate(self.hidden_sizes[:-1]):
             x = nn.Dense(
                 hidden_size,
                 kernel_init=self.get_kernel_init(),
@@ -177,17 +278,14 @@ class NeuralNetwork(nn.Module):
 
             x = self.activate(x)
 
-            # if self.randomized:
-            #     x = jax.lax.stop_gradient(x)
-
         x = nn.Dense(
-            self.final_size,
+            self.hidden_sizes[-1],
             kernel_init=self.get_kernel_init(),
             bias_init=self.get_bias_init(),
-            name="final_layer",
+            name=f"dense_{len(self.hidden_sizes) - 1}",
         )(x)
 
-        if self.vampnet:
+        if self.softmax_output:
             x = nn.softmax(x, axis=-1)
         else:
             x = self.activate(x)
@@ -203,7 +301,6 @@ class RaNNDy:
         X,
         operator,
         hidden_sizes,
-        final_size,
         activation="tanh",
         init_weights_dist: str = "normal",
         init_weights_std: float = 1.0,
@@ -219,14 +316,14 @@ class RaNNDy:
         # Create the neural network
         self.model = NeuralNetwork(
             hidden_sizes=hidden_sizes,
-            final_size=final_size,
+            # final_size=final_size,
             activation=activation,
             init_weights_dist=init_weights_dist,
             init_weights_std=init_weights_std,
             init_bias_dist=init_bias_dist,
             init_bias_std=init_bias_std,
             batch_norm=batch_norm,
-            vampnet=False,
+            softmax_output=False,
         )
 
         # Initialize parameters
@@ -317,8 +414,8 @@ class RaNNDy:
         """Koopman operator approximation"""
         if params is None:
             params = self.params
-        else:
-            params = params
+        # else:
+        #     params = params
 
         # Random data matrices
         N_x = self.model.apply(params, X, training=False, mutable=False)
@@ -347,11 +444,11 @@ class RaNNDy:
         E = eigvecs[:, :n].T  # shape (n, N_o)
 
         ## whitening transformation
-        ECxE_T = E @ C_xx @ E.T  #
+        ECxE_T = E @ C_xx @ E.T
 
         # make E such that E C_xx E^T = I
 
-        ECxE_T_inv_sqrt = fractional_matrix_power(ECxE_T, -0.5)  #
+        ECxE_T_inv_sqrt = fractional_matrix_power(ECxE_T, -0.5)
 
         # Apply whitening to E
         E_whitened = ECxE_T_inv_sqrt @ E
@@ -370,8 +467,8 @@ class RaNNDy:
         """Koopman generator approximation"""
         if params is None:
             params = self.params
-        else:
-            params = params
+        # else:
+        #     params = params
 
         Y1 = Y  # kwargs.get("Y1")
         Z1 = Z  # kwargs.get("Z1")
@@ -412,11 +509,11 @@ class RaNNDy:
         E = eigvecs[:, :n].T  # shape (n, N_o)
 
         ## whitening transformation
-        ECxE_T = E @ C_xx @ E.T  #
+        ECxE_T = E @ C_xx @ E.T
 
         # make E such that E C_xx E^T = I
 
-        ECxE_T_inv_sqrt = fractional_matrix_power(ECxE_T, -0.5)  #
+        ECxE_T_inv_sqrt = fractional_matrix_power(ECxE_T, -0.5)
 
         # Apply whitening to E
         E_whitened = ECxE_T_inv_sqrt @ E
@@ -434,8 +531,8 @@ class RaNNDy:
         """Schrodinger operator approximation"""
         if params is None:
             params = self.params
-        else:
-            params = params
+        # else:
+        #     params = params
 
         c0 = kwargs.get("c0")
         c2 = kwargs.get("c2")
@@ -471,11 +568,11 @@ class RaNNDy:
         E = eigvecs[:, :n].T  # shape (n, N_o)
 
         ## whitening transformation
-        ECxE_T = E @ C_xx @ E.T  #
+        ECxE_T = E @ C_xx @ E.T
 
         # make E such that E C_xx E^T = I
 
-        ECxE_T_inv_sqrt = fractional_matrix_power(ECxE_T, -0.5)  #
+        ECxE_T_inv_sqrt = fractional_matrix_power(ECxE_T, -0.5)
 
         # Apply whitening to E
         E_whitened = ECxE_T_inv_sqrt @ E
@@ -493,8 +590,8 @@ class RaNNDy:
         """Forward backward operator approximation"""
         if params is None:
             params = self.params
-        else:
-            params = params
+        # else:
+        #     params = params
 
         # Random data matrices
         N_x = self.model.apply(params, X, training=False, mutable=False)
@@ -523,11 +620,11 @@ class RaNNDy:
         # Take the top n eigenvectors
         E = eigvecs[:, :n].T  # shape (n, N_o)
         ## whitening transformation
-        ECxE_T = E @ C_xx @ E.T  #
+        ECxE_T = E @ C_xx @ E.T
 
         # make E such that E C_xx E^T = I
 
-        ECxE_T_inv_sqrt = fractional_matrix_power(ECxE_T, -0.5)  #
+        ECxE_T_inv_sqrt = fractional_matrix_power(ECxE_T, -0.5)
 
         # Apply whitening to E
         E_whitened = ECxE_T_inv_sqrt @ E
@@ -597,8 +694,8 @@ class RaNNDy:
         """To check rank of covariance matrices"""
         if params is None:
             params = self.params
-        else:
-            params = params
+        # else:
+        #     params = params
 
         # Random data matrices
         N_x = self.model.apply(params, X, training=False, mutable=False)
@@ -623,7 +720,6 @@ class RaNNDy:
             jnp.linalg.matrix_rank(C_yy),
             jnp.linalg.matrix_rank(C_yy_reg),
         )
-        return None
 
     def ensemble_models(
         self,
@@ -727,7 +823,6 @@ class VAMPNets:
         self,
         X,  # Input data for the neural network
         hidden_sizes,
-        final_size,  # output layer size
         activation="tanh",  # activation function
         init_weights_dist: str = "lecun_normal",
         init_weights_std: float = 1.0,  # Standard deviation for weight initialization
@@ -741,14 +836,13 @@ class VAMPNets:
         self.key = random.PRNGKey(random_state)
         self.model = NeuralNetwork(
             hidden_sizes,
-            final_size,
             activation,
             init_weights_dist,
             init_weights_std,
             init_bias_dist,
             init_bias_std,
             batch_norm,
-            vampnet=True,
+            softmax_output=True,
         )
         self.params = self.model.init(self.key, jnp.ones(self.X.shape), training=True)
         # self.params = self.variables["params"]
