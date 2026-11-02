@@ -296,8 +296,7 @@ class PlottingResults:
         if self.dimension == 1:
             # markers = ["o", "s", "^"]
             lines = ["-", "--", ":"]
-            # cmap = cm.get_cmap("tab10", num_funcs_to_plot)  # or "tab20", "Set1", etc.
-            # colors = [cmap(i) for i in range(num_funcs_to_plot)]
+            
             colors = ["red", "green", "blue"]
             # labels = ["RaNNDy", "VAMPnets", "Exact"]
             fig, ax = plt.subplots()  # Explicitly create Axes

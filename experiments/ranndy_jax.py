@@ -8,187 +8,6 @@ import optax
 import scipy as sp
 from flax import linen as nn
 from jax import random
-from scipy.linalg import fractional_matrix_power
-
-# Utility functions
-
-
-def load_traj(molecule: str, data_dir: str):
-    """
-    Returns: traj (mdtraj.Trajectory)
-    """
-
-    if molecule in {"nug2", "chignolin"}:
-        # D.E. Shaw datasets
-        if molecule == "nug2":
-            molecule_traj_dir = "ProteinG/NuG2-0-protein/"
-            molecule_top = "/home/s2421480/Documents/MD_datasets/ProteinG/NuG2pdb.pdb"
-        else:  # chignolin
-            molecule_traj_dir = "Chignolin/CLN025-0-protein/"
-            molecule_top = (
-                "/home/s2421480/Documents/MD_datasets/Chignolin/chignolin_pdb.pdb"
-            )
-
-        molecule_dir = data_dir + molecule_traj_dir
-
-        traj_names = []
-        for filename in sorted(os.listdir(molecule_dir)):
-            file_path = os.path.join(molecule_dir, filename)
-            traj_names.append(file_path)
-        if molecule == "nug2":
-            traj = md.load(traj_names[::2], top=molecule_top)
-        elif molecule == "chignolin":
-            traj = md.load(traj_names, top=molecule_top)
-
-    elif molecule in {"adip", "decal"}:
-        # Alanine dipeptide / deca alanine datasets (your current code is alanine dipeptide)
-        molecule_traj_dir = "feliks_data/Alanine_Dipeptide/"
-        molecule_dir = data_dir + molecule_traj_dir
-
-        # Keep the filenames exactly as in your example
-        traj_names = os.path.join(molecule_dir, "md_0_center.xtc")
-        traj = md.load(traj_names, top=os.path.join(molecule_dir, "ala2_newbox.gro"))
-    else:
-        raise ValueError(f"Unknown molecule: {molecule}")
-
-    return traj
-
-
-def calculate_its(eigvals, tau_ps, n_timescales=5):
-    """
-    Calculate non-trivial Koopman implied timescales.
-
-    Parameters
-    ----------
-    eigvals : array-like
-        Koopman eigenvalues.
-    tau_ps : float
-        Lag time in ps.
-    n_timescales : int
-        Number of slow timescales to return.
-
-    Returns
-    -------
-    eigvals_sorted : np.ndarray
-        Non-trivial eigenvalues.
-    its_ns : np.ndarray
-        Implied timescales in ns.
-    """
-
-    eigvals = np.asarray(eigvals)
-
-    eigvals = eigvals[np.isfinite(eigvals)]
-
-    # eigvals = eigvals[
-    #     np.argsort(-np.abs(eigvals))
-    # ]
-
-    if len(eigvals) > 0:
-        stationary_idx = np.argmin(np.abs(eigvals - 1.0))
-        eigvals = np.delete(eigvals, stationary_idx)
-
-    abs_lambda = np.abs(eigvals)
-
-    valid = (abs_lambda > 0) & (abs_lambda < 1)
-
-    eigvals = eigvals[valid]
-    abs_lambda = abs_lambda[valid]
-
-    its_ps = -tau_ps / np.log(abs_lambda)
-
-    order = np.argsort(its_ps)[::-1]
-
-    eigvals = eigvals[order]
-    its_ns = its_ps[order] / 1000.0
-
-    return (eigvals[:n_timescales], its_ns[:n_timescales])
-
-
-def sortEig(A, evs=5, which="LM"):
-    """
-    Computes eigenvalues and eigenvectors of A and sorts them in decreasing lexicographic order.
-
-    :param evs: number of eigenvalues/eigenvectors
-    :return:    sorted eigenvalues and eigenvectors
-    """
-    n = A.shape[0]
-    if evs < n:
-        d, V = sp.sparse.linalg.eigs(A, evs, which=which)
-    else:
-        d, V = sp.linalg.eig(A)
-    ind = d.argsort()[::-1]  # [::-1] reverses the list of indices
-    return (d[ind], V[:, ind])
-
-
-def qgedmd(X, psi, c0, c2, evs=5):
-    """
-    gEDMD for quantum
-
-    params -
-    X: data
-    psi: basis functions
-    c0: potential function
-
-    returns -
-    A: Hamiltonian approximation
-    d, V: eigenvalues and eigenvectors of A
-    """
-    PsiX = psi(X)
-
-    ddPsiX = psi.ddiff(X)  # Hessian (n,d,d,m)
-    Vx = c0(X)  # potential (1, m)
-    dPsiY = np.multiply(
-        Vx, PsiX
-    )  # potential multiplied basis (one of the terms in Hamiltonian operator)
-
-    # for i in range(n):
-    #     dPsiY[i, :] +=  c2(X) * np.trace(ddPsiX, axis1=1, axis2=2)
-
-    dPsiY = dPsiY + c2(X) * np.trace(ddPsiX, axis1=1, axis2=2)
-
-    C_0 = PsiX @ PsiX.T
-    C_1 = PsiX @ dPsiY.T
-
-    A = sp.linalg.pinv(C_0) @ C_1
-
-    d, V = sortEig(A, evs, which="SR")
-
-    return (A, d, V, C_0, C_1)
-
-
-def inverse(x, epsilon=1e-10, ret_sqrt=False):
-    """Utility function that returns the inverse of a matrix.
-
-    Parameters-
-    x: numpy array with shape [m,m]
-        matrix to be inverted
-
-    Returns-
-    x_inv: numpy array with shape [m,m]
-        inverse of the original matrix
-    """
-
-    # Calculate eigenvalues and eigenvectors
-    eigval_all, eigvec_all = jnp.linalg.eigh(x)
-
-    # Filter out eigenvalues below threshold and corresponding eigenvectors
-    eigval = eigval_all[eigval_all > epsilon]
-    eigvec = eigvec_all[:, eigval_all > epsilon]
-
-    # Build the diagonal matrix with the filtered eigenvalues or square root
-    # of the filtered eigenvalues according to the parameter
-    if ret_sqrt:
-        diag = jnp.diag(jnp.sqrt(1 / eigval))
-    else:
-        diag = jnp.diag(1 / eigval)
-
-    # Rebuild the square root of the inverse matrix
-    eigvec = eigvec.astype(jnp.float32)
-    diag = diag.astype(jnp.float32)
-    x_inv = jnp.matmul(eigvec, jnp.matmul(diag, eigvec.T))
-
-    return x_inv
-
 
 # ===============================================================================================================================
 ## Algorithms
@@ -205,10 +24,7 @@ class NeuralNetwork(nn.Module):
     softmax_output: bool = False
 
     def activate(self, x):
-        # if ws is not None:
-        #     scale = ws
-        # else:
-        #     scale = 1.0
+
         acts = {
             "relu": nn.relu,
             "sigmoid": nn.sigmoid,
@@ -256,7 +72,6 @@ class NeuralNetwork(nn.Module):
     @nn.compact
     def __call__(self, x, training=True):
 
-        # input: (features, batch)
         x = x.T  # (batch, features)
 
         for i, hidden_size in enumerate(self.hidden_sizes[:-1]):
@@ -443,17 +258,7 @@ class RaNNDy:
         # Take the top n eigenvectors
         E = eigvecs[:, :n].T  # shape (n, N_o)
 
-        ## whitening transformation
-        ECxE_T = E @ C_xx @ E.T
-
-        # make E such that E C_xx E^T = I
-
-        ECxE_T_inv_sqrt = fractional_matrix_power(ECxE_T, -0.5)
-
-        # Apply whitening to E
-        E_whitened = ECxE_T_inv_sqrt @ E
-
-        return A, eigvals[:n], E_whitened
+        return A, eigvals[:n], E
 
     def koopman_generator_eig_decomp(
         self,
@@ -508,17 +313,7 @@ class RaNNDy:
         # Take the top n eigenvectors
         E = eigvecs[:, :n].T  # shape (n, N_o)
 
-        ## whitening transformation
-        ECxE_T = E @ C_xx @ E.T
-
-        # make E such that E C_xx E^T = I
-
-        ECxE_T_inv_sqrt = fractional_matrix_power(ECxE_T, -0.5)
-
-        # Apply whitening to E
-        E_whitened = ECxE_T_inv_sqrt @ E
-
-        return A, eigvals[:n], E_whitened
+        return A, eigvals[:n], E
 
     def schrodinger_eig_decomp(
         self,
@@ -567,17 +362,7 @@ class RaNNDy:
         # Take the top n eigenvectors
         E = eigvecs[:, :n].T  # shape (n, N_o)
 
-        ## whitening transformation
-        ECxE_T = E @ C_xx @ E.T
-
-        # make E such that E C_xx E^T = I
-
-        ECxE_T_inv_sqrt = fractional_matrix_power(ECxE_T, -0.5)
-
-        # Apply whitening to E
-        E_whitened = ECxE_T_inv_sqrt @ E
-
-        return A, eigvals[:n], E_whitened
+        return A, eigvals[:n], E
 
     def forward_backward_eig_decomp(
         self,
@@ -619,17 +404,8 @@ class RaNNDy:
 
         # Take the top n eigenvectors
         E = eigvecs[:, :n].T  # shape (n, N_o)
-        ## whitening transformation
-        ECxE_T = E @ C_xx @ E.T
 
-        # make E such that E C_xx E^T = I
-
-        ECxE_T_inv_sqrt = fractional_matrix_power(ECxE_T, -0.5)
-
-        # Apply whitening to E
-        E_whitened = ECxE_T_inv_sqrt @ E
-
-        return A, eigvals[:n], E_whitened
+        return A, eigvals[:n], E
 
     def operator_eig_decomp(
         self,
@@ -655,8 +431,7 @@ class RaNNDy:
         """
         if params is None:
             params = self.params
-        else:
-            params = params
+
         # for Koopman operator
         if self.operator == "koopman":
             A, eigvals, E = self.koopman_eig_decomp(
@@ -802,9 +577,6 @@ class RaNNDy:
         if params is None:
             params = self.params
 
-        else:
-            params = params
-
         if domain is None:
             H_aug = self.model.apply(params, self.X, training=False, mutable=False)
         else:
@@ -845,8 +617,6 @@ class VAMPNets:
             softmax_output=True,
         )
         self.params = self.model.init(self.key, jnp.ones(self.X.shape), training=True)
-        # self.params = self.variables["params"]
-        # self.batch_stats = self.variables.get("batch_stats", {})
 
     def optimizer(self, optim="adam", lr=1e-3):  # , freeze_layers=None):
         if optim == "adam":
@@ -910,16 +680,12 @@ class VAMPNets:
 
         vamp_matrix = jnp.matmul(jnp.matmul(cov_00_inv, cov_01), cov_11_inv)
 
-        # For sum of eigenvalues
-        # vamp_matrix = jnp.matmul(cov_00_inv, cov_01)
-        # vamp_score = jnp.linalg.eigh(vamp_matrix)[0]  # sortEig(np.array(vamp_matrix), evs=3)[0]
-
         vamp_score = jnp.linalg.norm(vamp_matrix, "fro")
 
-        return -jnp.square(vamp_score)  # -jnp.sum(jnp.real(vamp_score[:5]))
+        return -jnp.square(vamp_score)
 
     def training(self, X, Y, n=5, epochs=100, optim="adam", lr=1e-3, epsilon=1e-5):
-        """Train the VAMPnets for certain epcohs with optimizer optim."""
+        """Train the VAMPnets for certain epochs with optimizer optim."""
         tx = self.optimizer(optim=optim, lr=lr)
         opt_state = tx.init(self.params)
 
@@ -1013,3 +779,194 @@ class VAMPNets:
         eigfuncs = eigvecs @ H_aug
 
         return eigfuncs
+
+
+# Utility functions
+
+
+def load_traj(molecule: str, data_dir: str):
+    """
+    Returns: traj (mdtraj.Trajectory)
+    """
+
+    if molecule in {"nug2", "chignolin"}:
+        # D.E. Shaw datasets
+        if molecule == "nug2":
+            molecule_traj_dir = "ProteinG/NuG2-0-protein/"
+            molecule_top = "/home/s2421480/Documents/MD_datasets/ProteinG/NuG2pdb.pdb"
+        else:  # chignolin
+            molecule_traj_dir = "Chignolin/CLN025-0-protein/"
+            molecule_top = (
+                "/home/s2421480/Documents/MD_datasets/Chignolin/chignolin_pdb.pdb"
+            )
+
+        molecule_dir = data_dir + molecule_traj_dir
+
+        traj_names = []
+        for filename in sorted(os.listdir(molecule_dir)):
+            file_path = os.path.join(molecule_dir, filename)
+            traj_names.append(file_path)
+        if molecule == "nug2":
+            traj = md.load(traj_names[::2], top=molecule_top)
+        elif molecule == "chignolin":
+            traj = md.load(traj_names, top=molecule_top)
+
+    elif molecule in {"adip", "decal"}:
+        # Alanine dipeptide / deca alanine datasets (your current code is alanine dipeptide)
+        molecule_traj_dir = "feliks_data/Alanine_Dipeptide/"
+        molecule_dir = data_dir + molecule_traj_dir
+
+        # Keep the filenames exactly as in your example
+        traj_names = os.path.join(molecule_dir, "md_0_center.xtc")
+        traj = md.load(traj_names, top=os.path.join(molecule_dir, "ala2_newbox.gro"))
+    else:
+        raise ValueError(f"Unknown molecule: {molecule}")
+
+    return traj
+
+
+def calculate_its(eigvals, tau_ps, n_timescales=5):
+    """
+    Calculate non-trivial Koopman implied timescales.
+
+    Parameters
+    ----------
+    eigvals : array-like
+        Koopman eigenvalues.
+    tau_ps : float
+        Lag time in ps.
+    n_timescales : int
+        Number of slow timescales to return.
+
+    Returns
+    -------
+    eigvals_sorted : np.ndarray
+        Non-trivial eigenvalues.
+    its_ns : np.ndarray
+        Implied timescales in ns.
+    """
+
+    eigvals = np.asarray(eigvals)
+
+    eigvals = eigvals[np.isfinite(eigvals)]
+
+    # eigvals = eigvals[
+    #     np.argsort(-np.abs(eigvals))
+    # ]
+
+    if len(eigvals) > 0:
+        stationary_idx = np.argmin(np.abs(eigvals - 1.0))
+        eigvals = np.delete(eigvals, stationary_idx)
+
+    abs_lambda = np.abs(eigvals)
+
+    valid = (abs_lambda > 0) & (abs_lambda < 1)
+
+    eigvals = eigvals[valid]
+    abs_lambda = abs_lambda[valid]
+
+    its_ps = -tau_ps / np.log(abs_lambda)
+
+    order = np.argsort(its_ps)[::-1]
+
+    eigvals = eigvals[order]
+    its_ns = its_ps[order] / 1000.0
+
+    return (eigvals[:n_timescales], its_ns[:n_timescales])
+
+
+def sortEig(A, evs=5, which="LM"):
+    """
+    Computes eigenvalues and eigenvectors of A and sorts them in decreasing lexicographic order.
+
+    :param evs: number of eigenvalues/eigenvectors
+    :return:    sorted eigenvalues and eigenvectors
+    """
+    n = A.shape[0]
+    if evs < n:
+        d, V = sp.sparse.linalg.eigs(A, evs, which=which)
+    else:
+        d, V = sp.linalg.eig(A)
+    ind = d.argsort()[::-1]  # [::-1] reverses the list of indices
+    return (d[ind], V[:, ind])
+
+
+def qgedmd(X, psi, c0, c2, evs=5):
+    """
+    gEDMD for quantum
+
+    params -
+    X: data
+    psi: basis functions
+    c0: potential function
+
+    returns -
+    A: Hamiltonian approximation
+    d, V: eigenvalues and eigenvectors of A
+    """
+    PsiX = psi(X)
+
+    ddPsiX = psi.ddiff(X)  # Hessian (n,d,d,m)
+    Vx = c0(X)  # potential (1, m)
+    dPsiY = np.multiply(
+        Vx, PsiX
+    )  # potential multiplied basis (one of the terms in Hamiltonian operator)
+
+    # for i in range(n):
+    #     dPsiY[i, :] +=  c2(X) * np.trace(ddPsiX, axis1=1, axis2=2)
+
+    dPsiY = dPsiY + c2(X) * np.trace(ddPsiX, axis1=1, axis2=2)
+
+    C_0 = PsiX @ PsiX.T
+    C_1 = PsiX @ dPsiY.T
+
+    A = sp.linalg.pinv(C_0) @ C_1
+
+    d, V = sortEig(A, evs, which="SR")
+
+    return (A, d, V, C_0, C_1)
+
+
+def inverse(x, epsilon=1e-10, ret_sqrt=False):
+    """Utility function that returns the inverse of a matrix.
+
+    Parameters-
+    x: numpy array with shape [m,m]
+        matrix to be inverted
+
+    Returns-
+    x_inv: numpy array with shape [m,m]
+        inverse of the original matrix
+    """
+
+    # Calculate eigenvalues and eigenvectors
+    eigval_all, eigvec_all = jnp.linalg.eigh(x)
+
+    # Filter out eigenvalues below threshold and corresponding eigenvectors
+    eigval = eigval_all[eigval_all > epsilon]
+    eigvec = eigvec_all[:, eigval_all > epsilon]
+
+    # Build the diagonal matrix with the filtered eigenvalues or square root
+    # of the filtered eigenvalues according to the parameter
+    if ret_sqrt:
+        diag = jnp.diag(jnp.sqrt(1 / eigval))
+    else:
+        diag = jnp.diag(1 / eigval)
+
+    # Rebuild the square root of the inverse matrix
+    eigvec = eigvec.astype(jnp.float32)
+    diag = diag.astype(jnp.float32)
+    x_inv = jnp.matmul(eigvec, jnp.matmul(diag, eigvec.T))
+
+    return x_inv
+
+
+# ## whitening transformation
+# ECxE_T = E @ C_xx @ E.T
+
+# # make E such that E C_xx E^T = I
+
+# ECxE_T_inv_sqrt = fractional_matrix_power(ECxE_T, -0.5)
+
+# # Apply whitening to E
+# E_whitened = ECxE_T_inv_sqrt @ E
