@@ -9,8 +9,11 @@ https://github.com/user-attachments/assets/a3cf210a-6fa1-48f0-8b4e-e0b0cdf754d6
 https://github.com/user-attachments/assets/98bf4a65-5a4e-40a0-b004-db4573f9fb9e
 
 
-https://github.com/user-attachments/assets/2d275352-ea82-4a46-8359-441700d1ad19
  
+
+https://github.com/user-attachments/assets/cbff3df5-23bf-4cbd-94fa-5f0917343bcf
+
+
 
 <!-- The method is described in the paper:  
 **“How deep is your network? Deep vs. shallow learning of transfer operators”**  
